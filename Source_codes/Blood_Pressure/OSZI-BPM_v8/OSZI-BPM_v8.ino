@@ -1,3 +1,12 @@
+///IN/OUT Defines
+
+#define BUTTON 12
+#define PUMP 11
+#define VALVE1 10
+#define VALVE2 9
+
+
+
 ///Variablen Presure and Oszilometry Signal/////////////////////////////////////////////////////////////////////
 volatile float P0Sensor = 75.3437;
 volatile float PSensor = 0.0;
@@ -44,123 +53,101 @@ boolean displayVal = false;
 char SerialCommand;
 
 ///Function ADCread//////////////////////////////////////////////////////////////////////////////////////////////
-uint16_t ADCread(uint8_t adcpin){
+uint16_t ADCread(uint8_t adcpin) {
   uint8_t ADCLval = 0;
-  uint8_t ADCHval = 0; 
+  uint8_t ADCHval = 0;
   ADMUX  &= (0xF0);
   ADMUX  |= (adcpin & 0x0F);
   ADCSRA |= (1 << ADSC);
-  while(!(ADCSRA & (1 << ADIF)));
+  while (!(ADCSRA & (1 << ADIF)));
   ADCLval = ADCL;
   ADCHval = ADCH;
   ADCSRA |= (1 << ADIF);
-  return (ADCHval<<2)|(ADCLval>>6);
+  return (ADCHval << 2) | (ADCLval >> 6);
 }
 
 ///Timer2 Interupt Service Routine (4ms)/////////////////////////////////////////////////////////////////////////////////
-ISR(TIMER2_COMPA_vect){
-  EnvelopeBufferTime=EnvelopeBufferTime+4;
-  NoPeakTime=NoPeakTime+4;
-  OSZsig  = (0.6859*OSZsig+0.3141*ADCread(1));
-  PSensor = 0.6859*PSensor+0.3141*((mSensor*ADCread(0))-P0Sensor); ///Presur Signal Sensor Filterd Lowpass 15Hz
+ISR(TIMER2_COMPA_vect) {
+  EnvelopeBufferTime = EnvelopeBufferTime + 4;
+  NoPeakTime = NoPeakTime + 4;
+  OSZsig  = (0.6859 * OSZsig + 0.3141 * ADCread(1));
+  PSensor = 0.6859 * PSensor + 0.3141 * ((mSensor * ADCread(0)) - P0Sensor); ///Presur Signal Sensor Filterd Lowpass 15Hz
 }
+
+
+// Variables for buttonPressed
+
+
+unsigned long lastDebounceTime = 0;  // the last time the output pin was toggled
+unsigned long debounceDelay = 20;    // the debounce time; increase if the output flickers
+
+int buttonState;             // the current reading from the input pin
+int lastButtonState = 1;     // the previous reading from the input pin
+int reading = 1;            // current reading from inputpin
 
 ///Setup//////////////////////////////////////////////////////////////////////////////////////////////////////////////////
 void setup() {
 
   cli(); // Disable Interupts
 
-///Setup ADCread////////////////////////////////////////////////////////////////////////////////////////////////////////
+  ///Setup ADCread////////////////////////////////////////////////////////////////////////////////////////////////////////
   ADCSRA  = 0x00;
   ADCSRB  = 0x00;
-  ADMUX  |= (1 << REFS0); 
-  ADMUX  |= (1 << ADLAR);    
-  ADCSRA |= (1 << ADPS0)|(1 << ADPS2) ; 
-  ADCSRA |= (1 << ADEN); 
+  ADMUX  |= (1 << REFS0);
+  ADMUX  |= (1 << ADLAR);
+  ADCSRA |= (1 << ADPS0) | (1 << ADPS2) ;
+  ADCSRA |= (1 << ADEN);
 
-///Setup Timer2//////////////////////////////////////////////////////////////////////////////////////////////////////////
+  ///Setup Timer2//////////////////////////////////////////////////////////////////////////////////////////////////////////
   TCCR2A = 0x00;
   TCCR2B = 0x00;
   TCNT2  = 0x00;
-  TCCR2A |=  (1<<WGM21);
-  TCCR2B |=  (1<<CS21)|(1<<CS22);
-  OCR2A   =   250-1;  
-  TIMSK2 |=  (1<<OCIE2A); 
-  
+  TCCR2A |=  (1 << WGM21);
+  TCCR2B |=  (1 << CS21) | (1 << CS22);
+  OCR2A   =   250 - 1;
+  TIMSK2 |=  (1 << OCIE2A);
+
   sei(); // Enable Interupts
 
-///Setup Digital Pins///////////////////////////////////////////////////////////////////////////////////////////////////
-  pinMode(12,INPUT);  //BUTTON
-  pinMode(11,OUTPUT);  //PUMP
-  pinMode(10, OUTPUT); //VALVE 1
-  pinMode(9, OUTPUT); //VALVE 2
-  digitalWrite(11,LOW);
-  digitalWrite(10,LOW);
-  digitalWrite(9,LOW);
+  ///Setup Digital Pins///////////////////////////////////////////////////////////////////////////////////////////////////
+  pinMode(BUTTON, INPUT);
+  pinMode(PUMP, OUTPUT);
+  pinMode(VALVE1, OUTPUT);
+  pinMode(VALVE2, OUTPUT);
+  digitalWrite(PUMP, LOW);
+  digitalWrite(VALVE1, LOW);
+  digitalWrite(VALVE2, LOW);
 
-///Serial Setup (9600 Baud)//////////////////////////////////////////////////////////////////////////////////////////// 
+  ///Serial Setup (9600 Baud)////////////////////////////////////////////////////////////////////////////////////////////
   Serial.begin(9600);
 }
 
 void loop() {
 
-//Abfrage des Seriellen Buffers wenn ein 'R' gesendet wurde Startet die Messung wenn ein 'S' gesendet wurde Stopt die Messung
-  if(Serial.available()){
-    SerialCommand = Serial.read();
-    if(SerialCommand=='R'){
-      PumpUp = true;
-      for(uint8_t i=0 ; i<5 ; i++){
-        P0correction = P0correction + PSensor;
-        delay(5);
-      }
-      P0correction = P0correction/5;
-      P0Sensor = P0Sensor+P0correction;
-      P0correction=0;
-      Serial.flush();
-    }
-    else if(SerialCommand=='S'){
-      BPMesure = false;
-      PumpUp = false;
-      EnvelopeBufferTime = 0;
-      OSZEnvelope = OSZEnvelopeThreshold;
-      OSZMax = 0;
-      SBP = 0;
-      MAP = 0;
-      DBP = 0;
-      digitalWrite(10,LOW);
-      digitalWrite(9,LOW);
-      Serial.flush();
-      for(uint16_t i = 0 ; i < 300 ; i++){
-        OSZValues[i] = 0;
-        PValues[i] = 0;
-      }
-    }
-    else{
-      Serial.flush();
-    }
-  }
 
-//Wenn der Taster gedrückt wurde Startet eine messung
-  if(digitalRead(12)==HIGH){
+  CheckSerial(); //SerialRead -> "S"top or "R"ead
+
+  //Wenn der Taster gedrückt wurde Startet eine messung
+  if (buttonPressed(BUTTON) == HIGH) { //buttonPressedFunction prevents bouncing and restart if hold
     PumpUp = true;
-    for(uint8_t i=0 ; i<5 ; i++){
+    for (uint8_t i = 0 ; i < 5 ; i++) {
       P0correction = P0correction + PSensor;
       delay(5);
     }
-    P0correction = P0correction/5;
-    P0Sensor = P0Sensor+P0correction;
-    P0correction=0;
+    P0correction = P0correction / 5;
+    P0Sensor = P0Sensor + P0correction;
+    P0correction = 0;
   }
 
-//Das Aufpumpen der Manschette Startet
-  while(PumpUp==true){
-    digitalWrite(10,HIGH);
-    digitalWrite(9,HIGH);
-    digitalWrite(11,HIGH);
+  //Das Aufpumpen der Manschette Startet
+  while (PumpUp == true) {
+    digitalWrite(VALVE1, HIGH);
+    digitalWrite(VALVE2, HIGH);
+    digitalWrite(PUMP, HIGH);
 
-    if(Serial.available()){
+    if (Serial.available()) {
       SerialCommand = Serial.read();
-      if(SerialCommand=='S'){
+      if (SerialCommand == 'S') {
         BPMesure = false;
         PumpUp = false;
         EnvelopeBufferTime = 0;
@@ -170,18 +157,18 @@ void loop() {
         SBP = 0;
         MAP = 0;
         DBP = 0;
-        digitalWrite(11,LOW);
-        digitalWrite(10,LOW);
-        digitalWrite(9,LOW);
+        digitalWrite(VALVE1, LOW);
+        digitalWrite(VALVE2, LOW);
+        digitalWrite(PUMP, LOW);
         Serial.flush();
       }
-      else{
+      else {
         Serial.flush();
       }
     }
-     
-    if(PSensor > 220){
-      digitalWrite(11,LOW);
+
+    if (PSensor > 220) {
+      digitalWrite(PUMP, LOW);
       delay(1000);
       PumpUp = false;
       BPMesure = true;
@@ -196,55 +183,55 @@ void loop() {
     }
   }
 
-  if((BPMesure==true)&&(PSensor > 20.0)){
+  if ((BPMesure == true) && (PSensor > 20.0)) {
 
-///Envelope Detection/////////////////////////////////////////////////////////////////////////////    
-    if(OSZsig > OSZEnvelope){
+    ///Envelope Detection/////////////////////////////////////////////////////////////////////////////
+    if (OSZsig > OSZEnvelope) {
       EnvelopeBufferTime = 0;
       OSZEnvelope = OSZsig;
       POSZEnvelope = PSensor;
       EnvelopeDetection = true;
     }
-    
-    if((EnvelopeBufferTime > 150)&&(EnvelopeDetection==true)){
+
+    if ((EnvelopeBufferTime > 150) && (EnvelopeDetection == true)) {
       OSZEnvelopeMax = OSZEnvelope;
-      
-      if(OSZEnvelopeMax > 970){
+
+      if (OSZEnvelopeMax > 970) {
         OSZEnvelope = OSZEnvelopeThreshold;
         EnvelopeBufferTime = 0;
         EnvelopeDetection = false;
       }
-      
-      if(FirstEnvelopePeak == false){
-        
-        for(uint16_t i = 0 ; i < 299 ; i++){
-          OSZValues[i] = OSZValues[i+1];
-          PValues[i] = PValues[i+1];
+
+      if (FirstEnvelopePeak == false) {
+
+        for (uint16_t i = 0 ; i < 299 ; i++) {
+          OSZValues[i] = OSZValues[i + 1];
+          PValues[i] = PValues[i + 1];
         }
-        
-          OSZValues[299] = OSZEnvelopeMax-425;
-          PValues[299] = POSZEnvelope;
-          OSZEnvelope = OSZEnvelopeThreshold;
-          EnvelopePeakDetected = true;
-          
-          if(OSZEnvelopeMax > OSZMax){
-            OSZMax = OSZEnvelopeMax;
-            MAP = POSZEnvelope;
-            OSZDBPCrit = (OSZMax-425)*0.81;
-            OSZSBPCrit = (OSZMax-425)*0.45;
-          }
-          
+
+        OSZValues[299] = OSZEnvelopeMax - 425;
+        PValues[299] = POSZEnvelope;
+        OSZEnvelope = OSZEnvelopeThreshold;
+        EnvelopePeakDetected = true;
+
+        if (OSZEnvelopeMax > OSZMax) {
+          OSZMax = OSZEnvelopeMax;
+          MAP = POSZEnvelope;
+          OSZDBPCrit = (OSZMax - 425) * 0.81;
+          OSZSBPCrit = (OSZMax - 425) * 0.45;
+        }
+
       }
 
-//Verringerung des Druckes zur Aufnahme eines neuem Messwertes
-      if(EnvelopePeakDetected==true){
-        PresureMesureLevel = PresureMesureLevel-5;
-        while(PSensor > PresureMesureLevel){
-          digitalWrite(9,LOW);
+      //Verringerung des Druckes zur Aufnahme eines neuem Messwertes
+      if (EnvelopePeakDetected == true) {
+        PresureMesureLevel = PresureMesureLevel - 5;
+        while (PSensor > PresureMesureLevel) {
+          digitalWrite(VALVE2, LOW);
         }
-        digitalWrite(9,HIGH);
+        digitalWrite(VALVE2, HIGH);
         delay(1000);
-        FirstEnvelopePeak=true;
+        FirstEnvelopePeak = true;
         NoPeakTime = 0;
       }
       EnvelopePeakDetected = false;
@@ -252,60 +239,131 @@ void loop() {
       EnvelopeDetection = false;
     }
 
-//Wenn für 2sec keine Oszillation detektiert wurde wird der Druck in der Manschette verringert
-    if(NoPeakTime > 2000){
-      PresureMesureLevel = PresureMesureLevel-5;
-      while(PSensor > PresureMesureLevel){
-        digitalWrite(9,LOW);
+    //Wenn für 2sec keine Oszillation detektiert wurde wird der Druck in der Manschette verringert
+    if (NoPeakTime > 2000) {
+      PresureMesureLevel = PresureMesureLevel - 5;
+      while (PSensor > PresureMesureLevel) {
+        digitalWrite(VALVE2, LOW);
       }
-      digitalWrite(9,HIGH);
+      digitalWrite(VALVE2, HIGH);
       delay(1000);
-      FirstEnvelopePeak=true;
+      FirstEnvelopePeak = true;
       NoPeakTime = 0;
     }
 
-///SBP-DBP Detection//////////////////////////////////////////////////////////////////////////////////
-    if((OSZValues[296] > OSZValues[297])&&(OSZValues[297] <= (OSZDBPCrit))&&(OSZValues[296] > (OSZDBPCrit))&&(OSZValues[297] > OSZValues[298])&&(OSZValues[297] > OSZValues[299])){
+    ///SBP-DBP Detection//////////////////////////////////////////////////////////////////////////////////
+    if ((OSZValues[296] > OSZValues[297]) && (OSZValues[297] <= (OSZDBPCrit)) && (OSZValues[296] > (OSZDBPCrit)) && (OSZValues[297] > OSZValues[298]) && (OSZValues[297] > OSZValues[299])) {
       DBP = PValues[297];
-      for(uint16_t i = 0 ; i < 300 ; i++){
-        if((OSZValues[i] < OSZSBPCrit)&&(OSZValues[i+1] <= OSZSBPCrit)&&(OSZValues[i+2] > OSZSBPCrit)){
-          SBP=PValues[i+1];
+      for (uint16_t i = 0 ; i < 300 ; i++) {
+        if ((OSZValues[i] < OSZSBPCrit) && (OSZValues[i + 1] <= OSZSBPCrit) && (OSZValues[i + 2] > OSZSBPCrit)) {
+          SBP = PValues[i + 1];
           break;
         }
       }
       BPMesure = false;
-      if(SBP > 0){
-      displayVal = true;
+      if (SBP > 0) {
+        displayVal = true;
       }
-      else{
-        Serial.print(String("BD")+00);
-        Serial.println(String("b")+00);
+      else {
+        Serial.print(String("BD") + 00);
+        Serial.println(String("b") + 00);
       }
-      for(uint16_t i = 0 ; i < 300 ; i++){
+      for (uint16_t i = 0 ; i < 300 ; i++) {
         OSZValues[i] = 0;
         PValues[i] = 0;
       }
     }
   }
-  else{
+  else {
     BPMesure = false;
-    digitalWrite(10,LOW);
-    digitalWrite(9,LOW);
+    digitalWrite(VALVE1, LOW);
+    digitalWrite(VALVE2, LOW);
   }
 
+  sendData(); //Übertragung der Blutdruckwerte.
 
-//Übertragung der Blutdruckwerte.
-  if(displayVal == true){    
-//    Serial.print(PSensor);
-//    Serial.print('\t');
-//    Serial.print(OSZsig);
-//    Serial.print('\t');       
-    Serial.print(String("BD")+int(SBP));
-//    Serial.print('\t');
-//    Serial.print(String("MAP: ")+MAP);
-//    Serial.print('\t');
-    Serial.println(String("b")+int(DBP));
-//    Serial.println();
+} ///LoopEnde
+
+
+
+void CheckSerial() {
+  //Abfrage des Seriellen Buffers wenn ein 'R' gesendet wurde Startet die Messung wenn ein 'S' gesendet wurde Stopt die Messung
+  if (Serial.available()) {
+    SerialCommand = Serial.read();
+    if (SerialCommand == 'R') {
+      PumpUp = true;
+      for (uint8_t i = 0 ; i < 5 ; i++) {
+        P0correction = P0correction + PSensor;
+        delay(5);
+      }
+      P0correction = P0correction / 5;
+      P0Sensor = P0Sensor + P0correction;
+      P0correction = 0;
+      Serial.flush();
+    }
+    else if (SerialCommand == 'S') {
+      BPMesure = false;
+      PumpUp = false;
+      EnvelopeBufferTime = 0;
+      OSZEnvelope = OSZEnvelopeThreshold;
+      OSZMax = 0;
+      SBP = 0;
+      MAP = 0;
+      DBP = 0;
+      digitalWrite(VALVE1, LOW);
+      digitalWrite(VALVE2, LOW);
+      Serial.flush();
+      for (uint16_t i = 0 ; i < 300 ; i++) {
+        OSZValues[i] = 0;
+        PValues[i] = 0;
+      }
+    }
+    else {
+      Serial.flush();
+    }
+  }
+}
+
+
+bool buttonPressed(int pin) {
+
+  lastButtonState = reading;
+  reading = digitalRead(pin);
+
+  if (reading != lastButtonState) {
+    // reset the debouncing timer
+    lastDebounceTime = millis();
+  }
+
+  if ((millis() - lastDebounceTime) > debounceDelay) {
+    if (reading != buttonState) {
+      buttonState = reading;
+
+      if (buttonState == 1) {
+        ////Serial.println("Ping");
+        ////Serial.println("");
+        ////Serial.println("");
+
+        return 1;  //returns HIGH if button was realy pressed
+      }
+    }
+  }
+}
+
+
+void sendData() {  //Übertragung der Blutdruckwerte.
+
+  if (displayVal == true) {
+    //    Serial.print(PSensor);
+    //    Serial.print('\t');
+    //    Serial.print(OSZsig);
+    //    Serial.print('\t');
+    Serial.print(String("BD") + int(SBP));
+    //    Serial.print('\t');
+    //    Serial.print(String("MAP: ")+MAP);
+    //    Serial.print('\t');
+    Serial.println(String("b") + int(DBP));
+    //    Serial.println();
     displayVal = false;
   }
 }
